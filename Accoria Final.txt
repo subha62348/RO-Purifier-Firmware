@@ -1,0 +1,1670 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2023 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "cmsis_os.h"
+#include<stdio.h>
+#include<string.h>
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#define EEPROM_ADDR 0xA0
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+int mode=0,mode1=0,mode2=0,flash_time=0,set_tds=0,set_hours=0,start_rest=5,a=0,z=0,end_menu=0,button_time=0,c=0,cursor_time1=0,inc_time=0,k,comp,sec_count=0,hours_left=0,hours_count=0;
+int next_time1=0,special_menu=0,emergency1=0,buzzer_count=0,buzzer=0;
+uint32_t lux=0,sec_count1,sec_count2;
+//uint32_t max1=0;
+uint32_t max2=0;
+uint32_t temp=0;
+char wellcome1[]="   WELLCOME TO";
+char wellcome2[]="    ACCORIA";
+char flash_buf[3];
+char hours_buf[3];
+char tds_buf[3];
+char remaining_hrs[3];
+char pass_buf[]="0000";
+char password[]="1000";
+char msg[20];
+char hrs[20];
+char time_min[8];
+char time_hrs[3];
+char special[]="00000000";
+char ph_no[10];
+  /* NOTE : This function should not be modified, when the callback is needed,
+            the HAL_TIM_IC_CaptureCallback could be implemented in the user file
+   */
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
+I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c3;
+
+TIM_HandleTypeDef htim10;
+TIM_HandleTypeDef htim11;
+
+UART_HandleTypeDef huart2;
+
+osThreadId Task1Handle;
+osThreadId Task2Handle;
+osThreadId Task3Handle;
+/* USER CODE BEGIN PV */
+#define SLAVE_ADDRESS_LCD 0x4E // change this according to ur setup
+void lcd_send_cmd (char cmd)
+{
+  char data_u, data_l;
+	uint8_t data_t[4];
+	data_u = (cmd&0xf0);
+	data_l = ((cmd<<4)&0xf0);
+	data_t[0] = data_u|0x0C;  //en=1, rs=0
+	data_t[1] = data_u|0x08;  //en=0, rs=0
+	data_t[2] = data_l|0x0C;  //en=1, rs=0
+	data_t[3] = data_l|0x08;  //en=0, rs=0
+	HAL_I2C_Master_Transmit (&hi2c3, SLAVE_ADDRESS_LCD,(uint8_t *) data_t, 4, 100);
+}
+void lcd_send_data (char data)
+{
+	char data_u, data_l;
+	uint8_t data_t[4];
+	data_u = (data&0xf0);
+	data_l = ((data<<4)&0xf0);
+	data_t[0] = data_u|0x0D;  //en=1, rs=1
+	data_t[1] = data_u|0x09;  //en=0, rs=1
+	data_t[2] = data_l|0x0D;  //en=1, rs=1
+	data_t[3] = data_l|0x09;  //en=0, rs=1
+	HAL_I2C_Master_Transmit (&hi2c3, SLAVE_ADDRESS_LCD,(uint8_t *) data_t, 4, 100);
+}
+void lcd_init (void)
+{
+	// 4 bit initialisation
+	HAL_Delay(50);  // wait for >40ms
+	lcd_send_cmd (0x30);
+	HAL_Delay(5);  // wait for >4.1ms
+	lcd_send_cmd (0x30);
+	HAL_Delay(1);  // wait for >100us
+	lcd_send_cmd (0x30);
+	HAL_Delay(10);
+	lcd_send_cmd (0x20);  // 4bit mode
+	HAL_Delay(10);
+
+  // dislay initialisation
+	lcd_send_cmd (0x28); // Function set --> DL=0 (4 bit mode), N = 1 (2 line display) F = 0 (5x8 characters)
+	HAL_Delay(1);
+	lcd_send_cmd (0x08); //Display on/off control --> D=0,C=0, B=0  ---> display off
+	HAL_Delay(1);
+	lcd_send_cmd (0x01);  // clear display
+	HAL_Delay(1);
+	HAL_Delay(1);
+	lcd_send_cmd (0x06); //Entry mode set --> I/D = 1 (increment cursor) & S = 0 (no shift)
+	HAL_Delay(1);
+	lcd_send_cmd (0x0C); //Display on/off control --> D = 1, C and B = 0. (Cursor and blink, last two bits)
+}
+void lcd_send_string (char *str)
+{
+	while (*str) lcd_send_data (*str++);
+}
+
+uint32_t maxtds()//adc tds sensor
+{
+	uint32_t max1=0;
+	for(int i=0;i<500;i++)
+	{
+	temp=HAL_ADC_GetValue(&hadc1);
+	if(max1<temp)
+		max1=temp;
+	//HAL_Delay(1);
+	}
+	return max1;
+}
+
+int compare()
+{
+	int count=0;
+	for(int i=0;i<4;i++)
+	{
+		  if(password[i]!=pass_buf[i])
+			  count++;
+	}
+	if(count==0)
+		return 1;
+	else
+		return 0;
+}
+int digit_count(int hours_count)
+{
+	int count=0,t;
+	t=hours_count;
+	  while(t!=0)
+	  {
+		  count++;
+		  t/=10;
+	  }
+	  return count;
+}
+int cti(char flash_buf[])
+{
+	int sum=0,i=0;
+	while(flash_buf[i]!='\0')
+	{
+		sum=(sum*10)+flash_buf[i]-'0';
+		i++;
+	}
+	return sum;
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim10)
+{
+	  a++;
+
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(htim10);
+  if(HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_RESET && (end_menu==0 || end_menu==1 || end_menu==2 ||end_menu==3 ||end_menu==4 ||end_menu==5 ||end_menu==6))
+  {
+  	mode++;
+  }
+
+ if(HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_SET && mode<50)
+ {
+	mode=0;
+ }
+if(HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_SET && mode>50  && mode<10)
+{
+    mode=50;
+}
+if(a>start_rest*10 && end_menu==0 && mode==0 && hours_left!=0)
+{
+  if(HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_SET && mode1<flash_time*10)
+  {
+  	HAL_GPIO_WritePin(FLASH_GPIO_Port, FLASH_Pin, GPIO_PIN_SET);
+  	HAL_GPIO_WritePin(ON_GPIO_Port, ON_Pin, GPIO_PIN_SET);
+
+  	mode1++;
+  }
+  if(HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_SET && mode1==flash_time*10)
+  {
+  	HAL_GPIO_WritePin(FLASH_GPIO_Port, FLASH_Pin, GPIO_PIN_RESET);
+  	HAL_GPIO_WritePin(ON_GPIO_Port, ON_Pin, GPIO_PIN_SET);
+  	mode1++;
+  	mode2=0;
+  	z=1;
+  }
+  if(HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_SET)
+  {
+	  sec_count++;
+
+  }
+  if(HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET && mode2<flash_time*10)
+  {
+  	HAL_GPIO_WritePin(FLASH_GPIO_Port, FLASH_Pin, GPIO_PIN_SET);
+  	HAL_GPIO_WritePin(ON_GPIO_Port, ON_Pin, GPIO_PIN_SET);
+  	mode2++;
+  }
+  if(HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET && mode2==flash_time*10)
+  {
+  	HAL_GPIO_WritePin(FLASH_GPIO_Port, FLASH_Pin, GPIO_PIN_RESET);
+  	HAL_GPIO_WritePin(ON_GPIO_Port, ON_Pin, GPIO_PIN_RESET);
+  	mode1=0;
+  	z=0;
+  }
+}
+if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET  && (end_menu==1||end_menu==2||end_menu==3||end_menu==4||end_menu==5||end_menu==6|| end_menu==7 || end_menu==8 || end_menu==20))
+{
+	      button_time++;
+}
+if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET && (end_menu==1 || end_menu==2|| end_menu==3|| end_menu==4|| end_menu==5 || end_menu==20 || end_menu==40))
+{
+	cursor_time1++;
+}
+if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && (end_menu==1 || end_menu==2 || end_menu==3 || end_menu==4 || end_menu==5 || end_menu==20 || end_menu==40))
+{
+	inc_time++;
+}
+if(HAL_GPIO_ReadPin(NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_RESET )
+{
+	next_time1++;
+	special_menu=1;
+}
+if( end_menu==0  && a>start_rest*10 && mode<50 &&(hours_left==10 ||hours_left==9 ||hours_left==8 ||hours_left==7 ||hours_left==6 ||hours_left==5 ||hours_left==4 ||hours_left==3 ||hours_left==2 ||hours_left==1))
+{
+	buzzer_count++;
+	if(buzzer_count<200)
+	{
+	HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_SET);
+	}
+	else
+	{
+	HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_RESET);
+	}
+
+}
+}
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_I2C3_Init(void);
+static void MX_TIM10_Init(void);
+static void MX_TIM11_Init(void);
+static void MX_ADC1_Init(void);
+void StartTask1(void const * argument);
+void StartTask2(void const * argument);
+void StartTask3(void const * argument);
+
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_USART2_UART_Init();
+  MX_I2C1_Init();
+  MX_I2C3_Init();
+  MX_TIM10_Init();
+  MX_TIM11_Init();
+  MX_ADC1_Init();
+  /* USER CODE BEGIN 2 */
+  HAL_TIM_Base_Start_IT(&htim10);
+  //HAL_TIM_Base_Start_IT(&htim11);
+  /* USER CODE END 2 */
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* definition and creation of Task1 */
+  osThreadDef(Task1, StartTask1, osPriorityNormal, 0, 128);
+  Task1Handle = osThreadCreate(osThread(Task1), NULL);
+
+  /* definition and creation of Task2 */
+  osThreadDef(Task2, StartTask2, osPriorityNormal, 0, 128);
+  Task2Handle = osThreadCreate(osThread(Task2), NULL);
+
+  /* definition and creation of Task3 */
+  osThreadDef(Task3, StartTask3, osPriorityNormal, 0, 128);
+  Task3Handle = osThreadCreate(osThread(Task3), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 16;
+  RCC_OscInitStruct.PLL.PLLN = 336;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
+  RCC_OscInitStruct.PLL.PLLQ = 7;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV4;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_AnalogWDGConfTypeDef AnalogWDGConfig = {0};
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the analog watchdog
+  */
+  AnalogWDGConfig.WatchdogMode = ADC_ANALOGWATCHDOG_SINGLE_REG;
+  AnalogWDGConfig.HighThreshold = 0;
+  AnalogWDGConfig.LowThreshold = 0;
+  AnalogWDGConfig.Channel = ADC_CHANNEL_4;
+  AnalogWDGConfig.ITMode = DISABLE;
+  if (HAL_ADC_AnalogWDGConfig(&hadc1, &AnalogWDGConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief I2C3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C3_Init(void)
+{
+
+  /* USER CODE BEGIN I2C3_Init 0 */
+
+  /* USER CODE END I2C3_Init 0 */
+
+  /* USER CODE BEGIN I2C3_Init 1 */
+
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.ClockSpeed = 100000;
+  hi2c3.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
+
+}
+
+/**
+  * @brief TIM10 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM10_Init(void)
+{
+
+  /* USER CODE BEGIN TIM10_Init 0 */
+
+  /* USER CODE END TIM10_Init 0 */
+
+  /* USER CODE BEGIN TIM10_Init 1 */
+
+  /* USER CODE END TIM10_Init 1 */
+  htim10.Instance = TIM10;
+  htim10.Init.Prescaler = 42000;
+  htim10.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim10.Init.Period = 100;
+  htim10.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim10.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim10) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM10_Init 2 */
+
+  /* USER CODE END TIM10_Init 2 */
+
+}
+
+/**
+  * @brief TIM11 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM11_Init(void)
+{
+
+  /* USER CODE BEGIN TIM11_Init 0 */
+
+  /* USER CODE END TIM11_Init 0 */
+
+  /* USER CODE BEGIN TIM11_Init 1 */
+
+  /* USER CODE END TIM11_Init 1 */
+  htim11.Instance = TIM11;
+  htim11.Init.Prescaler = 42000;
+  htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim11.Init.Period = 1000;
+  htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim11.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim11) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM11_Init 2 */
+
+  /* USER CODE END TIM11_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, FLASH_Pin|ON_Pin|LD2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : BUZZER_Pin */
+  GPIO_InitStruct.Pin = BUZZER_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(BUZZER_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : FLASH_Pin ON_Pin LD2_Pin */
+  GPIO_InitStruct.Pin = FLASH_Pin|ON_Pin|LD2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : MENU_Pin */
+  GPIO_InitStruct.Pin = MENU_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(MENU_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : NEXT_Pin CURSOR_Pin INC_Pin */
+  GPIO_InitStruct.Pin = NEXT_Pin|CURSOR_Pin|INC_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+/* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartTask1 */
+/**
+  * @brief  Function implementing the Task1 thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartTask1 */
+void StartTask1(void const * argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X00, 0XFF, (uint8_t*)flash_buf, sizeof(flash_buf), 100);
+	  HAL_Delay(10);
+	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X03, 0XFF, (uint8_t*)tds_buf, sizeof(tds_buf), 100);
+	  HAL_Delay(10);
+	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X06, 0XFF, (uint8_t*)hours_buf, sizeof(hours_buf), 100);
+	  HAL_Delay(10);
+     HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X40, 0XFF, (uint8_t*) time_min, sizeof(time_min), 100);  // initially to know the time(minute)
+      HAL_Delay(10);
+	  sec_count1=cti(time_min);
+	  hours_count=sec_count1/36000;
+	  HAL_Delay(1);
+	  set_hours=cti(hours_buf);
+	  HAL_Delay(1);
+      hours_left=set_hours-hours_count;
+      HAL_Delay(1);
+	  sprintf(remaining_hrs,"%d",hours_left);
+	  lcd_init();
+	  lcd_send_string ((char*) wellcome1);
+	  HAL_Delay(1);
+	  lcd_send_cmd (0XC0);
+	  HAL_Delay(1);
+	  lcd_send_string ((char*) wellcome2);
+
+	 // HAL_UART_Transmit(&huart2, flush_buf, 3, 100);
+  for(;;)
+  {
+//	  hours_left=set_hours-hours_count;
+//	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X00, 0XFF, (uint8_t*)flash_buf, sizeof(flash_buf), 100);
+//	  HAL_Delay(10);
+//	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X03, 0XFF, (uint8_t*)tds_buf, sizeof(tds_buf), 100);
+//	  HAL_Delay(10);
+//	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X06, 0XFF, (uint8_t*)hours_buf, sizeof(hours_buf), 100);
+//	  HAL_Delay(10);
+	  if( sec_count==1000 )
+	  {
+		    sec_count1+=sec_count;
+		    sprintf(time_min,"%lu",sec_count1);
+	        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0X40, 0XFF, (uint8_t*) time_min, sizeof(time_min), 100);
+	        HAL_Delay(10);
+	       HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X40, 0XFF, (uint8_t*) time_min, sizeof(time_min), 100);
+	        HAL_Delay(10);
+	        sec_count=0;
+	        sec_count1=cti(time_min);
+    	  hours_count=sec_count1/36000;
+    	  HAL_Delay(1);
+    	  sprintf(time_hrs,"%d",hours_count);
+    	  HAL_Delay(10);
+    	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X06, 0XFF, (uint8_t*)hours_buf, sizeof(hours_buf), 10);
+    	  HAL_Delay(10);
+    	  set_hours=cti(hours_buf);
+	        hours_left=set_hours-hours_count;
+	        HAL_Delay(1);
+	  	  sprintf(remaining_hrs,"%d",hours_left);
+	  	HAL_Delay(1);
+      }
+	 sprintf(hrs,"totl hrs %d\n",hours_count);
+	 HAL_UART_Transmit(&huart2, (uint8_t*) hrs, strlen(hrs), 100);
+	 sprintf(hrs,"sec:%d\n",sec_count);
+	 HAL_UART_Transmit(&huart2, (uint8_t*) hrs, strlen(hrs), 100);
+	 sprintf(hrs,"set_hrs:%d\n",set_hours);
+	 HAL_UART_Transmit(&huart2, (uint8_t*) hrs, strlen(hrs), 100);
+	 sprintf(hrs,"hrs_lft:%d\n",hours_left);
+	 HAL_UART_Transmit(&huart2, (uint8_t*) hrs, strlen(hrs), 100);
+
+
+
+/*
+     if(HAL_GPIO_ReadPin(NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_RESET  && end_menu==0 && next_time1==30 && special_menu==1)
+	   {
+    	 end_menu=20;
+    	 special_menu=2;
+    	 emergency1=0;
+	  	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X46, 0XFF, (uint8_t*)special, sizeof(special), 10);
+	  	  HAL_Delay(10);
+    	  lcd_send_cmd (0X01);
+    	  HAL_Delay(5);
+    	  lcd_send_string ("   SET MODE");
+      		     lcd_send_cmd (0XC0);
+      		     HAL_Delay(5);
+      		     lcd_send_string ("RESET HOURS:");
+      		     lcd_send_string (special);
+      		     lcd_send_string ("H");
+      		     lcd_send_cmd (0XCC);
+      		     lcd_send_cmd (0X0F);
+      		     c=12;
+       }
+
+          if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET  && end_menu==20 && cursor_time1==2)
+	        {
+  	            c++;
+  	            k++;
+  	            lcd_send_cmd (0XC0+c);
+  	            if(c==15)
+  	            {
+  		          c=12;
+  		          k=0;
+  		            lcd_send_cmd (0XCC);
+  	            }
+  	              cursor_time1=0;
+	        }
+          if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && end_menu==20 && inc_time==2)
+          {
+        	  special[k]+=1;
+  	           if(special[k]==':')
+  	          {
+  	        	 special[k]-=10;
+  	          }
+  	           lcd_send_cmd (0XCC);
+  	           lcd_send_string (special);
+  	           lcd_send_cmd (0XCC+k);
+  	          inc_time=0;
+          }
+
+          if( HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_RESET && HAL_GPIO_ReadPin(NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==20 && next_time1==60)
+          {
+  	        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0X46, 0XFF, (uint8_t*) special, sizeof(special), 1000);
+  	        HAL_Delay(10);
+  	  	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X46, 0XFF, (uint8_t*)special, sizeof(special), 1000);
+  	  	  HAL_Delay(10);
+        	  end_menu=0;
+        	  special_menu=0;
+        	  next_time1=0;
+          }
+*/
+
+
+
+
+
+
+
+
+
+     if(HAL_GPIO_ReadPin(NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_RESET  && end_menu==0 && next_time1==30 && special_menu==1)
+	   {
+       special_menu=2;
+       end_menu=20;
+       lcd_send_cmd (0X01);
+       HAL_Delay(5);
+	     lcd_send_string ("Special Password");
+	     lcd_send_cmd (0XC0);
+	     HAL_Delay(5);
+	     lcd_send_string (pass_buf);
+	     lcd_send_cmd (0XC0);
+	     HAL_Delay(5);
+	     lcd_send_cmd (0X0F);
+       c=0;
+       k=0;
+	   }
+     if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET && end_menu==20 && cursor_time1==2)
+	   {
+  	   c++;
+  	   k++;
+  	   lcd_send_cmd (0XC0+c);
+  	   if(c==4)
+  	   {
+  		 c=0;
+  		 k=0;
+  		 lcd_send_cmd (0XC0);
+  	   }
+  	   cursor_time1=0;
+	   }
+     if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && end_menu==20 && inc_time==2)
+     {
+  	   pass_buf[k]+=1;
+  	   if(pass_buf[k]==':')
+  	   {
+  		   pass_buf[k]-=10;
+  	   }
+  	   lcd_send_cmd (0XC0);
+  	   lcd_send_string (pass_buf);
+  	   lcd_send_cmd (0XC0+k);
+  	   inc_time=0;
+     }
+     comp=compare();         // comparing password and pass_buf
+
+     if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==20 &&  button_time==4 && comp==0 )// if user enter wrong password
+   {
+         for(int i=0;i<4;i++)
+         {
+       	  pass_buf[i]='0';   // to make pass_buff 0000 again
+         }
+       end_menu=20;
+       special_menu=2;
+       button_time=0;
+       lcd_send_cmd (0X01);
+       HAL_Delay(1);
+	     lcd_send_string ("Wrong Password");
+	     lcd_send_cmd (0XC0);
+	     HAL_Delay(5);
+	     lcd_send_string (pass_buf);
+	     lcd_send_cmd (0XC0);
+	     lcd_send_cmd (0X0F);
+         c=0;
+         k=0;
+   }
+
+// page1 end
+     //page2 start
+
+  	   if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==20 &&  button_time==4 && comp==1)
+  		   {
+             for(int i=0;i<4;i++)
+             {
+           	  pass_buf[i]='0';   // to make pass_buff 0000 again
+             }
+  	        end_menu=40;
+  	        button_time=0;
+  	    	 emergency1=0;
+  	    	  lcd_send_cmd (0X01);
+  	    	  HAL_Delay(5);
+  	    	lcd_send_cmd (0X0C);
+  	    	  lcd_send_string ("   SET MODE");
+  	      		     lcd_send_cmd (0XC0);
+  	      		     HAL_Delay(5);
+  	      		     lcd_send_string ("RESET HOURS:");
+  	      		     lcd_send_string ("OK");
+
+  		   }
+
+
+         if( HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_RESET && HAL_GPIO_ReadPin(NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==40 && next_time1==60)
+         {
+ 	        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0X40, 0XFF, (uint8_t*) special, sizeof(special), 1000);
+ 	        HAL_Delay(10);
+ 	       	  end_menu=0;
+ 	       	  special_menu=0;
+ 	       	  next_time1=0;
+
+         }
+
+
+
+
+
+
+
+
+//
+
+
+
+
+
+
+
+  //
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartTask2 */
+/**
+* @brief Function implementing the Task2 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask2 */
+void StartTask2(void const * argument)
+{
+  /* USER CODE BEGIN StartTask2 */
+  /* Infinite loop */
+//	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X00, 0XFF, (uint8_t*)flash_buf, sizeof(flash_buf), 100);
+//	  HAL_Delay(10);
+	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X03, 0XFF, (uint8_t*)tds_buf, sizeof(tds_buf), 100);
+	  HAL_Delay(10);
+//	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X06, 0XFF, (uint8_t*)hours_buf, sizeof(hours_buf), 100);
+//	  HAL_Delay(10);
+  	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X50, 0XFF, (uint8_t*)ph_no, sizeof(ph_no), 10);
+  	  HAL_Delay(10);
+	  flash_time=cti(flash_buf);
+      set_tds=cti(tds_buf);
+      set_hours=cti(hours_buf);
+
+  for(;;)
+  {
+//page1 start
+       if(HAL_GPIO_ReadPin(MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_RESET && mode==50 && end_menu==0)
+	   {
+
+         end_menu=1;
+         HAL_GPIO_WritePin(FLASH_GPIO_Port, FLASH_Pin, GPIO_PIN_RESET);
+  	     HAL_GPIO_WritePin(ON_GPIO_Port, ON_Pin, GPIO_PIN_RESET);
+  	     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+         lcd_send_cmd (0X01);
+         HAL_Delay(5);
+	     lcd_send_string ("Enter Password");
+	     lcd_send_cmd (0XC0);
+	     HAL_Delay(5);
+	     lcd_send_string (pass_buf);
+	     lcd_send_cmd (0XC0);
+	     HAL_Delay(5);
+	     lcd_send_cmd (0X0F);
+         c=0;
+         k=0;
+	   }
+       if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET && end_menu==1 && cursor_time1==2)
+	   {
+    	   c++;
+    	   k++;
+    	   lcd_send_cmd (0XC0+c);
+    	   if(c==4)
+    	   {
+    		 c=0;
+    		 k=0;
+    		 lcd_send_cmd (0XC0);
+    	   }
+    	   cursor_time1=0;
+	   }
+       if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && end_menu==1 && inc_time==2)
+       {
+    	   pass_buf[k]+=1;
+    	   if(pass_buf[k]==':')
+    	   {
+    		   pass_buf[k]-=10;
+    	   }
+    	   lcd_send_cmd (0XC0);
+    	   lcd_send_string (pass_buf);
+    	   lcd_send_cmd (0XC0+k);
+    	   inc_time=0;
+       }
+       comp=compare();         // comparing password and pass_buf
+
+       if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==1 &&  button_time==2 && comp==0)// if user enter wrong password
+     {
+           for(int i=0;i<4;i++)
+           {
+         	  pass_buf[i]='0';   // to make pass_buff 0000 again
+           }
+         end_menu=1;
+         button_time=0;
+         HAL_GPIO_WritePin(FLASH_GPIO_Port, FLASH_Pin, GPIO_PIN_RESET);
+    	 HAL_GPIO_WritePin(ON_GPIO_Port, ON_Pin, GPIO_PIN_RESET);
+    	 HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+         lcd_send_cmd (0X01);
+         HAL_Delay(1);
+  	     lcd_send_string ("Wrong Password");
+  	     lcd_send_cmd (0XC0);
+  	     HAL_Delay(5);
+  	     lcd_send_string (pass_buf);
+  	     lcd_send_cmd (0XC0);
+  	     lcd_send_cmd (0X0F);
+           c=0;
+           k=0;
+     }
+
+// page1 end
+       //page2 start
+
+    	   if((HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==1 &&  button_time==2 && comp==1)||(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==8  && button_time==16))
+    		   {
+               for(int i=0;i<4;i++)
+               {
+             	  pass_buf[i]='0';   // to make pass_buff 0000 again
+               }
+    	        end_menu=2;
+    	        button_time=0;
+    	         lcd_send_cmd (0X01);
+    	         HAL_Delay(1);
+    		     lcd_send_string ("   SET MODE");
+    		     lcd_send_cmd (0XC0);
+    		     HAL_Delay(5);
+    		     lcd_send_string ("FLASH TIME: ");
+    		     lcd_send_string (flash_buf);
+    		     lcd_send_string ("S");
+    		     lcd_send_cmd (0XCC);
+    		     lcd_send_cmd (0X0F);
+    		     c=12;
+    		     k=0;
+    		   }
+           if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET && end_menu==2 && cursor_time1==2)
+    	   {
+        	   c++;
+        	   k++;
+        	   lcd_send_cmd (0XC0+c);
+        	   if(c==15)
+        	   {
+        		 c=12;
+        		 k=0;
+        		 lcd_send_cmd (0XCC);
+        	   }
+        	   cursor_time1=0;
+    	   }
+           if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && end_menu==2 && inc_time==2)
+           {
+        	   flash_buf[k]+=1;
+        	   if(flash_buf[k]==':')
+        	   {
+        		   flash_buf[k]-=10;
+        	   }
+        	   lcd_send_cmd (0XCC);
+        	   lcd_send_string (flash_buf);
+        	   lcd_send_cmd (0XCC+k);
+        	   inc_time=0;
+           }
+           //page2 end
+           //page3 start
+       if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==2 &&  button_time==4 )
+    		   {
+    	        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0X00, 0XFF, (uint8_t*) flash_buf, sizeof(flash_buf), 10);
+    	        HAL_Delay(10);
+    	  	    HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X00, 0XFF, (uint8_t*)flash_buf, sizeof(flash_buf), 10);
+    	  	    HAL_Delay(10);
+    	  	    flash_time=cti(flash_buf);
+               end_menu=3;
+	             lcd_send_cmd (0X01);
+	             HAL_Delay(1);
+		         lcd_send_string ("   SET MODE");
+    		     lcd_send_cmd (0XC0);
+    		     HAL_Delay(5);
+    		     lcd_send_string ("SET TDS:    ");
+    		     lcd_send_string (tds_buf);
+    		     lcd_send_string ("T");
+    		     lcd_send_cmd (0XCC);
+    		     lcd_send_cmd (0X0F);
+    		     c=12;
+    		   }
+       if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET && end_menu==3 && cursor_time1==2)
+	   {
+    	   c++;
+    	   k++;
+    	   lcd_send_cmd (0XC0+c);
+    	   if(c==15)
+    	   {
+    		 c=12;
+    		 k=0;
+    		 lcd_send_cmd (0XCC);
+    	   }
+    	   cursor_time1=0;
+	   }
+       if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && end_menu==3 && inc_time==2)
+       {
+    	   tds_buf[k]+=1;
+    	   if(tds_buf[k]==':')
+    	   {
+    		   tds_buf[k]-=10;
+    	   }
+    	   lcd_send_cmd (0XCC);
+    	   lcd_send_string (tds_buf);
+    	   lcd_send_cmd (0XCC+k);
+    	   inc_time=0;
+       }
+       //page3 end
+       //page4 start
+       if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==3 && button_time==6)
+    		   {
+	        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0X03, 0XFF, (uint8_t*) tds_buf, sizeof(tds_buf), 10);
+	        HAL_Delay(10);
+	  	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X03, 0XFF, (uint8_t*)tds_buf, sizeof(tds_buf), 10);
+	  	  HAL_Delay(10);
+	      set_tds=cti(tds_buf);
+               end_menu=4;
+  	             lcd_send_cmd (0X01);
+  	             HAL_Delay(1);
+  		         lcd_send_string ("   SET MODE");
+    		     lcd_send_cmd (0XC0);
+    		     HAL_Delay(5);
+    		     lcd_send_string ("SET HOURS:  ");
+    		     lcd_send_string (hours_buf);
+    		     lcd_send_string ("H");
+    		     lcd_send_cmd (0XCC);
+    		     lcd_send_cmd (0X0F);
+    		     c=12;
+    		   }
+       if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET && end_menu==4 && cursor_time1==2)
+	   {
+    	   c++;
+    	   k++;
+    	   lcd_send_cmd (0XC0+c);
+    	   if(c==15)
+    	   {
+    		 c=12;
+    		 k=0;
+    		 lcd_send_cmd (0XCC);
+    	   }
+    	   cursor_time1=0;
+	   }
+       if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && end_menu==4 && inc_time==2)
+       {
+    	   hours_buf[k]+=1;
+    	   if(hours_buf[k]==':')
+    	   {
+    		   hours_buf[k]-=10;
+    	   }
+    	   lcd_send_cmd (0XCC);
+    	   lcd_send_string (hours_buf);
+    	   lcd_send_cmd (0XCC+k);
+    	   inc_time=0;
+       }
+
+
+
+
+
+
+
+
+
+
+
+       if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==4 && button_time==8)
+    		   {
+	        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0X06, 0XFF, (uint8_t*) hours_buf, sizeof(hours_buf), 10);
+	        HAL_Delay(10);
+		  	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X06, 0XFF, (uint8_t*)hours_buf, sizeof(hours_buf), 10);
+		  	  HAL_Delay(10);
+	      set_tds=cti(tds_buf);
+               end_menu=5;
+  	             lcd_send_cmd (0X01);
+  	             HAL_Delay(1);
+  		         lcd_send_string (" SET MOBILE NO");
+    		     lcd_send_cmd (0XC0);
+    		     HAL_Delay(5);
+    		     lcd_send_string ("SET:  ");
+    		     lcd_send_string (ph_no);
+    		     lcd_send_cmd (0XC6);
+    		     lcd_send_cmd (0X0F);
+    		     c=6;
+    		   }
+       if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET && end_menu==5 && cursor_time1==2)
+	   {
+    	   c++;
+    	   k++;
+    	   lcd_send_cmd (0XC0+c);
+    	   if(c==16)
+    	   {
+    		 c=6;
+    		 k=0;
+    		 lcd_send_cmd (0XC6);
+    	   }
+    	   cursor_time1=0;
+	   }
+       if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && end_menu==5 && inc_time==2)
+       {
+    	   ph_no[k]+=1;
+    	   if(ph_no[k]==':')
+    	   {
+    		   ph_no[k]-=10;
+    	   }
+    	   lcd_send_cmd (0XC6);
+    	   lcd_send_string (ph_no);
+    	   lcd_send_cmd (0XC6+k);
+    	   inc_time=0;
+       }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//page4 end
+    //page5 start
+       if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==5 && button_time==10)
+           		   {
+	        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0X50, 0XFF, (uint8_t*) ph_no, sizeof(ph_no), 10);
+	        HAL_Delay(10);
+		  	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X50, 0XFF, (uint8_t*)ph_no, sizeof(ph_no), 10);
+		  	  HAL_Delay(10);
+		       HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X40, 0XFF, (uint8_t*) time_min, sizeof(time_min), 100);
+		        HAL_Delay(10);
+		        sec_count2=cti(time_min);
+	    	  hours_count=sec_count2/36000;
+	    	  HAL_Delay(1);
+	    	  sprintf(time_hrs,"%d",hours_count);
+                      end_menu=6;
+         	             lcd_send_cmd (0X01);
+         	             HAL_Delay(1);
+         		         lcd_send_string ("   PARAMETER");
+           		     lcd_send_cmd (0XC0);
+           		     HAL_Delay(5);
+           		     lcd_send_string ("TOTAL HOURS:");
+           		     lcd_send_string (time_hrs);
+           		     lcd_send_string ("H");
+           		     lcd_send_cmd (0X0C);
+           		     HAL_Delay(2);
+           		    // lcd_send_cmd (0XCC);
+           		    // lcd_send_cmd (0X0F);
+           		    // c=12;
+           		   }
+       /*
+              if(HAL_GPIO_ReadPin(CURSOR_GPIO_Port, CURSOR_Pin) == GPIO_PIN_RESET && end_menu==5 && cursor_time1==2)
+       	   {
+           	   c++;
+           	   k++;
+           	   lcd_send_cmd (0XC0+c);
+           	   if(c==15)
+           	   {
+           		 c=12;
+           		 k=0;
+           		 lcd_send_cmd (0XCC);
+           	   }
+           	   cursor_time1=0;
+       	   }
+              if(HAL_GPIO_ReadPin(INC_GPIO_Port, INC_Pin) == GPIO_PIN_RESET && end_menu==5 && inc_time==2)
+              {
+            	  time_hrs[k]+=1;
+           	   if(time_hrs[k]==':')
+           	   {
+           		time_hrs[k]-=10;
+           	   }
+           	   lcd_send_cmd (0XCC);
+           	   lcd_send_string (time_hrs);
+           	   lcd_send_cmd (0XCC+k);
+           	   inc_time=0;
+              }
+        */
+       //page5 end
+              //page6 start
+       if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==6 && button_time==12)
+    		   {
+	   /*     HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0X46, 0XFF, (uint8_t*) time_hrs, sizeof(time_hrs), 10);
+	        HAL_Delay(10);
+		  	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X46, 0XFF, (uint8_t*)time_hrs, sizeof(time_hrs), 10);
+		  	  HAL_Delay(10);
+	   */
+			  hours_count=cti(time_hrs);
+			  HAL_Delay(1);
+			  set_hours=cti(hours_buf);
+			  HAL_Delay(1);
+		      hours_left=set_hours-hours_count;
+		      HAL_Delay(1);
+			  sprintf(remaining_hrs,"%d",hours_left);
+
+               end_menu=7;
+  	             lcd_send_cmd (0X01);
+  	             HAL_Delay(1);
+  		         lcd_send_string ("   PARAMETER");
+    		     lcd_send_cmd (0XC0);
+    		     HAL_Delay(5);
+    		     lcd_send_string ("LEFT HOURS: ");
+    		     lcd_send_string (remaining_hrs);
+    		     lcd_send_string ("H");
+       		     lcd_send_cmd (0X0C);
+       		     HAL_Delay(2);
+    		   }
+       //page6 end
+       if(HAL_GPIO_ReadPin (NEXT_GPIO_Port, NEXT_Pin) == GPIO_PIN_RESET && end_menu==7 && button_time==14)
+    		   {
+               end_menu=8;
+    		   }
+       if(HAL_GPIO_ReadPin (MENU_GPIO_Port, MENU_Pin) == GPIO_PIN_RESET && mode==100 )
+    		   {
+                    end_menu=0;
+                    button_time=0;
+                    lcd_send_cmd (0X0C);
+                    mode=0;
+                    mode1=0;
+                    mode2=0;
+                    z=0;
+
+    		   }
+
+  }
+  /* USER CODE END StartTask2 */
+}
+
+/* USER CODE BEGIN Header_StartTask3 */
+/**
+* @brief Function implementing the Task3 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask3 */
+void StartTask3(void const * argument)
+{
+  /* USER CODE BEGIN StartTask3 */
+  /* Infinite loop */
+//	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X00, 0XFF, (uint8_t*)flash_buf, sizeof(flash_buf), 100);
+//	  HAL_Delay(10);
+//	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X03, 0XFF, (uint8_t*)tds_buf, sizeof(tds_buf), 100);
+//	  HAL_Delay(10);
+//	  HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0X06, 0XFF, (uint8_t*)hours_buf, sizeof(hours_buf), 100);
+//	  HAL_Delay(10);
+
+
+  for(;;)
+  {
+
+	  if(a>start_rest*10 && end_menu==0 && mode==0)
+	  {
+	     HAL_ADC_Start(&hadc1);
+         HAL_ADC_PollForConversion(&hadc1, 1000);
+         lux=0;
+          for(int i=0;i<1500;i++)
+               {
+	               max2=maxtds();
+	               lux=lux+max2;
+                }
+                   lux=lux/1500;
+                    lux=lux/(2.97*1.07);
+
+        sprintf(msg,"TDS:%lu",lux);
+     // if(emergency1!=1)
+      // {
+             lcd_send_cmd (0X01);
+             HAL_Delay(5);
+             lcd_send_string ((char*) msg);
+             if(((HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_SET && mode1<flash_time*10)||(HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_SET && z==1)||
+		        (HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET && mode2<flash_time*10)) && hours_left>10 )
+                  {
+	                  lcd_send_cmd (0XC0);
+	                  HAL_Delay(5);
+	                  lcd_send_string ("Purification On");
+                  }
+        if(HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET && mode2==flash_time*10 && hours_left>10)
+          {
+	          lcd_send_cmd (0XC0);
+	          HAL_Delay(5);
+	          lcd_send_string ("Tank Full");
+          }
+      // }
+        if(lux<set_tds && HAL_GPIO_ReadPin (B1_GPIO_Port, B1_Pin) == GPIO_PIN_SET  && hours_left!=0)
+           HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+        else
+           HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+
+        if(hours_left==10 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+             if(buzzer==0)
+             {
+            	 buzzer_count=0;
+            	 buzzer=1;
+             }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("10 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==9 &&  end_menu==0 && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==1)
+            {
+           	 buzzer_count=0;
+           	 buzzer=2;
+            }
+            emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("9 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==8 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==2)
+            {
+           	 buzzer_count=0;
+           	 buzzer=3;
+            }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("8 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==7 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==3)
+            {
+           	 buzzer_count=0;
+           	 buzzer=4;
+            }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("7 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==6 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==4)
+            {
+           	 buzzer_count=0;
+           	 buzzer=5;
+            }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("6 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==5 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==5)
+            {
+           	 buzzer_count=0;
+           	 buzzer=6;
+            }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("5 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==4 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==6)
+            {
+           	 buzzer_count=0;
+           	 buzzer=7;
+            }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("4 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==3 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==7)
+            {
+           	 buzzer_count=0;
+           	 buzzer=8;
+            }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("3 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==2 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==8)
+            {
+           	 buzzer_count=0;
+           	 buzzer=9;
+            }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("2 hr lft");
+          lcd_send_cmd (0XC0);
+          HAL_Delay(5);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+        }
+        if(hours_left==1 &&  end_menu==0  && a>start_rest*10 && mode<50)
+        {
+            if(buzzer==9)
+            {
+           	 buzzer_count=0;
+           	 buzzer=10;
+            }
+      	  emergency1=1;
+      	  lcd_send_cmd (0X87);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("1 hr lft");
+              lcd_send_cmd (0XC0);
+              HAL_Delay(5);
+          	  lcd_send_string ("Call  ");
+          	lcd_send_string (ph_no);
+        }
+        if(hours_left==0  && end_menu==0 && a>start_rest*10 && mode<50)
+        {
+        	buzzer=0;
+      	  lcd_send_cmd (0X01);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("0 Hr Left Call");
+      	  lcd_send_cmd (0XC0);
+      	  HAL_Delay(1);
+      	  lcd_send_string ("Call  ");
+      	lcd_send_string (ph_no);
+      	  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_SET);
+      	  	HAL_GPIO_WritePin(FLASH_GPIO_Port, FLASH_Pin, GPIO_PIN_RESET);
+      	  	HAL_GPIO_WritePin(ON_GPIO_Port, ON_Pin, GPIO_PIN_RESET);
+      	  	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+        }
+
+   }
+  }
+  /* USER CODE END StartTask3 */
+}
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
